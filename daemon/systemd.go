@@ -17,6 +17,17 @@ const (
 	systemdServiceName = ServiceName + ".service"
 )
 
+// systemdTemplateOwnedEnvKeys are keys the unit template renders directly; if
+// they also appear in cfg.EnvExtra the template version wins.
+var systemdTemplateOwnedEnvKeys = map[string]struct{}{
+	"CC_CONFIG":          {},
+	"CC_LOG_FILE":        {},
+	"CC_LOG_MAX_SIZE":    {},
+	"CC_LOG_MAX_BACKUPS": {},
+	"PATH":               {},
+	"HOME":               {},
+}
+
 type systemdManager struct {
 	system bool // true = system-level (/etc/systemd/system), false = user-level (~/.config/systemd/user)
 }
@@ -180,6 +191,8 @@ func (m *systemdManager) buildUnit(cfg Config) string {
 	sb.WriteString("Type=simple\n")
 	fmt.Fprintf(&sb, "ExecStart=%s\n", cfg.BinaryPath)
 	fmt.Fprintf(&sb, "WorkingDirectory=%s\n", cfg.WorkDir)
+	// ExecStart passes no --config flag, so an explicit config path is
+	// delivered to the daemon via CC_CONFIG. Read back by resolveConfigPath.
 	if cfg.ConfigPath != "" {
 		fmt.Fprintf(&sb, "Environment=\"CC_CONFIG=%s\"\n", escapeSystemdEnvValue(cfg.ConfigPath))
 	}
@@ -191,8 +204,13 @@ func (m *systemdManager) buildUnit(cfg Config) string {
 	if cfg.EnvPATH != "" {
 		fmt.Fprintf(&sb, "Environment=\"PATH=%s\"\n", cfg.EnvPATH)
 	}
-	if home := getHomeDir(); home != "" {
-		fmt.Fprintf(&sb, "Environment=\"HOME=%s\"\n", home)
+	// HOME: systemd does not propagate HOME to system units by default.
+	// Without this line, os.UserHomeDir() fails in the daemon and any
+	// subprocess it spawns; config.Load then falls back to a relative
+	// data_dir which agents (cd'd into work_dir) resolve to the wrong
+	// place, e.g. <work_dir>/.cc-connect instead of <HOME>/.cc-connect.
+	if cfg.HomeDir != "" {
+		fmt.Fprintf(&sb, "Environment=\"HOME=%s\"\n", escapeSystemdEnvValue(cfg.HomeDir))
 	}
 	if len(cfg.EnvExtra) > 0 {
 		keys := make([]string, 0, len(cfg.EnvExtra))
@@ -201,6 +219,9 @@ func (m *systemdManager) buildUnit(cfg Config) string {
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
+			if _, owned := systemdTemplateOwnedEnvKeys[key]; owned {
+				continue
+			}
 			if !isValidEnvName(key) {
 				slog.Warn("daemon: systemd: dropping invalid env name from EnvExtra",
 					"key", key)
@@ -359,11 +380,4 @@ func CheckLinger() (enabled bool, user string) {
 
 	linger := strings.TrimSpace(string(out))
 	return linger == "Linger=yes", user
-}
-
-func getHomeDir() string {
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return home
-	}
-	return ""
 }

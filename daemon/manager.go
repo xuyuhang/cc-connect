@@ -21,14 +21,15 @@ const (
 )
 
 type Config struct {
-	BinaryPath        string
-	WorkDir           string
-	ConfigPath        string            // explicit config file path; written as CC_CONFIG in systemd unit
-	LogFile           string
-	LogMaxSize        int64
-	LogMaxBackups     int
-	EnvPATH           string            // capture user's PATH so agents are accessible
-	EnvExtra          map[string]string // selected environment variables needed by the service runtime
+	BinaryPath    string
+	WorkDir       string
+	ConfigPath    string // explicit config file path; WorkingDirectory is what actually selects the config at runtime
+	HomeDir       string // captured HOME so subprocesses can resolve ~/… paths (issue: relative data_dir fallback)
+	LogFile       string
+	LogMaxSize    int64
+	LogMaxBackups int
+	EnvPATH       string            // capture user's PATH so agents are accessible
+	EnvExtra      map[string]string // selected environment variables needed by the service runtime
 	// NoCaptureSecrets, when true, restricts the install-time env capture
 	// to proxy-related variables only and skips both the config.toml ${ENV}
 	// placeholder scan and any extension discoverers registered via
@@ -75,12 +76,12 @@ func DefaultDataDir() string {
 // etc. can locate the log file without parsing service definitions.
 
 type Meta struct {
-	LogFile      string `json:"log_file"`
-	LogMaxSize   int64  `json:"log_max_size"`
-	LogMaxBackups int   `json:"log_max_backups"`
-	WorkDir      string `json:"work_dir"`
-	BinaryPath   string `json:"binary_path"`
-	InstalledAt  string `json:"installed_at"`
+	LogFile       string `json:"log_file"`
+	LogMaxSize    int64  `json:"log_max_size"`
+	LogMaxBackups int    `json:"log_max_backups"`
+	WorkDir       string `json:"work_dir"`
+	BinaryPath    string `json:"binary_path"`
+	InstalledAt   string `json:"installed_at"`
 }
 
 func metaPath() string {
@@ -148,6 +149,15 @@ func Resolve(cfg *Config) error {
 	}
 	if cfg.EnvPATH == "" {
 		cfg.EnvPATH = os.Getenv("PATH")
+	}
+	if cfg.HomeDir == "" {
+		// os.UserHomeDir uses HOME on Unix and USERPROFILE on Windows.
+		// A non-empty result gets baked into the service unit so the
+		// daemon (and any subprocess it spawns) sees the correct home
+		// even when systemd/launchd would otherwise leave HOME unset.
+		if home, err := os.UserHomeDir(); err == nil {
+			cfg.HomeDir = home
+		}
 	}
 	if len(cfg.EnvExtra) == 0 {
 		cfg.EnvExtra = captureDaemonEnv(cfg.NoCaptureSecrets)
@@ -270,4 +280,3 @@ func captureConfigEnvPlaceholdersInString(s string, env map[string]string) {
 		}
 	}
 }
-

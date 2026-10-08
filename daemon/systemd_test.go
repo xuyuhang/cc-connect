@@ -72,32 +72,63 @@ func TestBuildUnit_DropsEmptyValue(t *testing.T) {
 	}
 }
 
-func TestBuildUnit_IncludesConfigPath(t *testing.T) {
+// TestBuildUnit_IncludesHOME regresses the "Append system prompt file not
+// found" bug: systemd does not inherit HOME from the user's shell for
+// system units, so the daemon (and any subprocess it spawns) would fail
+// os.UserHomeDir() and config.Load would fall back to a relative
+// data_dir that resolves against work_dir instead of the user home.
+// The install-time capture of HomeDir is now baked into the unit as an
+// Environment= line to guarantee the daemon sees the correct home.
+func TestBuildUnit_IncludesHOME(t *testing.T) {
 	mgr := &systemdManager{system: false}
 	cfg := Config{
 		BinaryPath: "/bin/true",
 		WorkDir:    "/tmp",
-		ConfigPath: "/opt/myapp/config.toml",
 		LogFile:    "/tmp/log",
 		LogMaxSize: 1024,
+		EnvPATH:    "/usr/bin",
+		HomeDir:    "/home/app",
 	}
 	out := mgr.buildUnit(cfg)
-	if !strings.Contains(out, `Environment="CC_CONFIG=/opt/myapp/config.toml"`) {
-		t.Errorf("expected CC_CONFIG in unit; got:\n%s", out)
+	if !strings.Contains(out, `Environment="HOME=/home/app"`) {
+		t.Fatalf("unit should include HOME=/home/app when HomeDir is set; got:\n%s", out)
 	}
 }
 
-func TestBuildUnit_OmitsConfigPathWhenEmpty(t *testing.T) {
+// TestBuildUnit_OmitsHOMEWhenEmpty ensures the unit does not emit an
+// empty HOME= line when the caller could not determine one.
+func TestBuildUnit_OmitsHOMEWhenEmpty(t *testing.T) {
 	mgr := &systemdManager{system: false}
 	cfg := Config{
 		BinaryPath: "/bin/true",
 		WorkDir:    "/tmp",
 		LogFile:    "/tmp/log",
 		LogMaxSize: 1024,
+		EnvPATH:    "/usr/bin",
 	}
 	out := mgr.buildUnit(cfg)
-	if strings.Contains(out, "CC_CONFIG") {
-		t.Errorf("CC_CONFIG should not appear when ConfigPath is empty: %s", out)
+	if strings.Contains(out, `Environment="HOME=`) {
+		t.Fatalf("unit should omit HOME= when HomeDir empty; got:\n%s", out)
+	}
+}
+
+func TestBuildUnit_EnvExtraHOMEDoesNotOverrideTemplateHOME(t *testing.T) {
+	mgr := &systemdManager{system: false}
+	cfg := Config{
+		BinaryPath: "/bin/true",
+		WorkDir:    "/tmp",
+		LogFile:    "/tmp/log",
+		LogMaxSize: 1024,
+		EnvPATH:    "/usr/bin",
+		HomeDir:    "/home/app",
+		EnvExtra:   map[string]string{"HOME": "/should-not-override"},
+	}
+	out := mgr.buildUnit(cfg)
+	if strings.Contains(out, "/should-not-override") {
+		t.Fatalf("EnvExtra HOME leaked past template ownership: %s", out)
+	}
+	if !strings.Contains(out, `Environment="HOME=/home/app"`) {
+		t.Fatalf("expected template HOME /home/app to survive; got:\n%s", out)
 	}
 }
 
@@ -163,5 +194,58 @@ func TestUnitFileMode_Is0600(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("mode = %o, want 0600", info.Mode().Perm())
+	}
+}
+
+// TestBuildUnit_IncludesConfigPath pins the CC_CONFIG hand-off: ExecStart
+// passes no --config flag, so an explicit config path installed via
+// `daemon install --config <path>` reaches the daemon only through the
+// environment. Without this line a non-"config.toml" filename would
+// silently resolve to ~/.cc-connect/config.toml at startup.
+func TestBuildUnit_IncludesConfigPath(t *testing.T) {
+	mgr := &systemdManager{system: false}
+	out := mgr.buildUnit(Config{
+		BinaryPath: "/bin/true",
+		WorkDir:    "/opt/myapp",
+		ConfigPath: "/opt/myapp/app.toml",
+		LogFile:    "/tmp/log",
+		LogMaxSize: 1024,
+	})
+	if !strings.Contains(out, `Environment="CC_CONFIG=/opt/myapp/app.toml"`) {
+		t.Errorf("expected CC_CONFIG in unit; got:\n%s", out)
+	}
+}
+
+func TestBuildUnit_OmitsConfigPathWhenEmpty(t *testing.T) {
+	mgr := &systemdManager{system: false}
+	out := mgr.buildUnit(Config{
+		BinaryPath: "/bin/true",
+		WorkDir:    "/tmp",
+		LogFile:    "/tmp/log",
+		LogMaxSize: 1024,
+	})
+	if strings.Contains(out, "CC_CONFIG") {
+		t.Errorf("CC_CONFIG should not appear when ConfigPath is empty:\n%s", out)
+	}
+}
+
+// TestBuildUnit_EnvExtraConfigDoesNotOverrideTemplate pins template
+// ownership: an EnvExtra capture of CC_CONFIG must not shadow the path
+// the user explicitly passed to `daemon install --config`.
+func TestBuildUnit_EnvExtraConfigDoesNotOverrideTemplate(t *testing.T) {
+	mgr := &systemdManager{system: false}
+	out := mgr.buildUnit(Config{
+		BinaryPath: "/bin/true",
+		WorkDir:    "/opt/myapp",
+		ConfigPath: "/opt/myapp/app.toml",
+		LogFile:    "/tmp/log",
+		LogMaxSize: 1024,
+		EnvExtra:   map[string]string{"CC_CONFIG": "/should-not-override.toml"},
+	})
+	if strings.Contains(out, "/should-not-override.toml") {
+		t.Errorf("EnvExtra CC_CONFIG leaked past template ownership:\n%s", out)
+	}
+	if !strings.Contains(out, `Environment="CC_CONFIG=/opt/myapp/app.toml"`) {
+		t.Errorf("expected explicit ConfigPath to survive; got:\n%s", out)
 	}
 }
