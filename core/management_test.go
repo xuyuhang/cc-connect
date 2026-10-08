@@ -1084,7 +1084,7 @@ func TestMgmt_AddPlatformToNewProject_DoesNotRequireEngine(t *testing.T) {
 	}
 }
 
-func TestMgmt_AddPlatformToNewProject_RejectsMissingWorkDir(t *testing.T) {
+func TestMgmt_AddPlatformToNewProject_CreatesMissingWorkDir(t *testing.T) {
 	mgmt, ts, _ := testManagementServer(t, "tok")
 
 	called := false
@@ -1099,7 +1099,7 @@ func TestMgmt_AddPlatformToNewProject_RejectsMissingWorkDir(t *testing.T) {
 		"options":  map[string]any{"client_id": "abc", "client_secret": "def"},
 		"work_dir": missing,
 	})
-	// work_dir is auto-created when missing (createIfMissing=true)
+	// work_dir is auto-created when missing (validateProjectWorkDirOrCreate)
 	if !r.OK {
 		t.Fatalf("expected missing work_dir to be created, got error: %v", r.Error)
 	}
@@ -1108,7 +1108,7 @@ func TestMgmt_AddPlatformToNewProject_RejectsMissingWorkDir(t *testing.T) {
 	}
 }
 
-func TestMgmt_SetupSave_RejectsMissingWorkDir(t *testing.T) {
+func TestMgmt_SetupSave_CreatesMissingWorkDir(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing")
 
 	t.Run("feishu", func(t *testing.T) {
@@ -1125,7 +1125,7 @@ func TestMgmt_SetupSave_RejectsMissingWorkDir(t *testing.T) {
 			"app_secret": "secret",
 			"work_dir":   missing,
 		})
-		// work_dir is auto-created when missing (createIfMissing=true)
+		// work_dir is auto-created when missing (validateProjectWorkDirOrCreate)
 		if !r.OK || code != http.StatusOK {
 			t.Fatalf("response ok=%v status=%d error=%q, want 200", r.OK, code, r.Error)
 		}
@@ -1147,7 +1147,7 @@ func TestMgmt_SetupSave_RejectsMissingWorkDir(t *testing.T) {
 			"token":    "token",
 			"work_dir": missing,
 		})
-		// work_dir is auto-created when missing (createIfMissing=true)
+		// work_dir is auto-created when missing (validateProjectWorkDirOrCreate)
 		if !r.OK || code != http.StatusOK {
 			t.Fatalf("response ok=%v status=%d error=%q, want 200", r.OK, code, r.Error)
 		}
@@ -1181,6 +1181,34 @@ func TestValidateProjectWorkDir(t *testing.T) {
 	}
 	if _, err := validateProjectWorkDir(file); err == nil || !strings.Contains(err.Error(), "work_dir is not a directory") {
 		t.Fatalf("file work_dir error = %v, want not a directory", err)
+	}
+}
+
+// TestWorkDirStatus covers every state /api/v1/health reports for a
+// project's work_dir. Ops dashboards and alert routing key off these
+// strings, so the distinction between "unset" (not configured),
+// "missing" (configured but absent), and "not_a_directory" (a file is in
+// the way) has to stay stable.
+func TestWorkDirStatus(t *testing.T) {
+	if st := workDirStatus(""); st["status"] != "unset" {
+		t.Errorf("empty workDir status = %v, want unset", st["status"])
+	}
+	if st := workDirStatus(t.TempDir()); st["status"] != "ok" {
+		t.Errorf("existing workDir status = %v, want ok", st["status"])
+	}
+	if st := workDirStatus(filepath.Join(t.TempDir(), "does-not-exist")); st["status"] != "missing" {
+		t.Errorf("absent workDir status = %v, want missing", st["status"])
+	}
+	file := filepath.Join(t.TempDir(), "file.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+	if st := workDirStatus(file); st["status"] != "not_a_directory" {
+		t.Errorf("file workDir status = %v, want not_a_directory", st["status"])
+	}
+	// path is echoed back so operators can see which directory was probed
+	if st := workDirStatus(file); st["path"] != file {
+		t.Errorf("workDirStatus path = %v, want %q", st["path"], file)
 	}
 }
 
