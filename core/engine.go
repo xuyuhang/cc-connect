@@ -1444,6 +1444,13 @@ func (e *Engine) SetBaseWorkDir(dir string) {
 	e.baseWorkDir = dir
 }
 
+// WorkDir returns the project-level base work_dir, i.e. the directory the
+// engine itself was configured with — NOT the active session's workspace.
+// Sessions opened under a per-session workspace override report a different
+// directory (see the agent's GetWorkDir), so callers that need the directory
+// a specific session is running in must ask the session/agent instead. Used by
+// the /api/v1/health endpoint, which reports project health rather than the
+// state of any one conversation.
 func (e *Engine) WorkDir() string {
 	return e.baseWorkDir
 }

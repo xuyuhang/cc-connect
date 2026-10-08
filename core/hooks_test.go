@@ -579,3 +579,55 @@ func TestEmit_HTTPAllRetriesFail(t *testing.T) {
 		t.Errorf("expected 2 attempts, got %d", attempts.Load())
 	}
 }
+
+// TestEmit_HTTPDoesNotRetryOnClientError pins the retry filter: a 4xx (other
+// than 429) is the endpoint rejecting the request itself, so a second
+// identical attempt cannot succeed and only delays the log line by
+// retryDelay. 5xx and transport errors still retry — see
+// TestEmit_HTTPRetryOnFailure.
+func TestEmit_HTTPDoesNotRetryOnClientError(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound, http.StatusGone} {
+		var attempts atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			attempts.Add(1)
+			w.WriteHeader(status)
+		}))
+
+		hooks := []HookConfig{
+			{Event: "error", Type: "http", URL: srv.URL, Async: boolPtr(false)},
+		}
+		hm := NewHookManager("proj", hooks, "sh", "-c", "")
+		hm.Emit(HookEvent{Event: HookEventError})
+		srv.Close()
+
+		if attempts.Load() != 1 {
+			t.Errorf("status %d: expected 1 attempt (no retry on client error), got %d", status, attempts.Load())
+		}
+	}
+}
+
+// TestEmit_HTTPRetriesOnTooManyRequests pins 429 as the client-error
+// exception: it explicitly asks the caller to come back later, so the
+// retry budget applies.
+func TestEmit_HTTPRetriesOnTooManyRequests(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if attempts.Add(1) == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	hooks := []HookConfig{
+		{Event: "error", Type: "http", URL: srv.URL, Async: boolPtr(false)},
+	}
+	hm := NewHookManager("proj", hooks, "sh", "-c", "")
+
+	hm.Emit(HookEvent{Event: HookEventError})
+
+	if attempts.Load() != 2 {
+		t.Errorf("expected 2 attempts (429 + 1 retry), got %d", attempts.Load())
+	}
+}

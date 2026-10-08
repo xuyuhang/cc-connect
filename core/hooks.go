@@ -251,7 +251,21 @@ func (hm *HookManager) executeHTTP(h *HookConfig, event HookEvent) {
 
 		if resp.StatusCode >= 400 {
 			lastErr = fmt.Errorf("http %d", resp.StatusCode)
-			slog.Warn("hooks: http response error",
+			// Retry only failures that can plausibly succeed on a second
+			// attempt: transport errors (handled above) and 5xx, which are
+			// server-side. A 4xx is the endpoint telling us the request
+			// itself is wrong — 400/401/403/404/410 will return the same
+			// thing every time, so retrying just delays the log line by
+			// retryDelay. 429 is the exception: it explicitly asks for a
+			// later retry.
+			if resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
+				slog.Warn("hooks: http response error",
+					"project", hm.project, "event", event.Event,
+					"url", h.URL, "status", resp.StatusCode,
+				)
+				return
+			}
+			slog.Warn("hooks: http response error, retrying",
 				"project", hm.project, "event", event.Event,
 				"url", h.URL, "status", resp.StatusCode,
 			)
