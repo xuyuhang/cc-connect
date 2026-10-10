@@ -589,6 +589,8 @@ func TestBuildPlist_IncludesConfigPath(t *testing.T) {
 	}
 }
 
+// TestBuildPlist_OmitsConfigPathWhenEmpty ensures no CC_CONFIG entry is
+// emitted when the caller passed no --config.
 func TestBuildPlist_OmitsConfigPathWhenEmpty(t *testing.T) {
 	cfg := Config{
 		BinaryPath: "/bin/true",

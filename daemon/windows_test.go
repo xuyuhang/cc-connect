@@ -214,6 +214,8 @@ func TestBuildWindowsTaskScript_IncludesConfigPath(t *testing.T) {
 	}
 }
 
+// TestBuildWindowsTaskScript_OmitsConfigPathWhenEmpty ensures no
+// $env:CC_CONFIG assignment is emitted when the caller passed no --config.
 func TestBuildWindowsTaskScript_OmitsConfigPathWhenEmpty(t *testing.T) {
 	cfg := Config{
 		BinaryPath: `C:\cc\cc-connect.exe`,

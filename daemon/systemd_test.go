@@ -216,6 +216,9 @@ func TestBuildUnit_IncludesConfigPath(t *testing.T) {
 	}
 }
 
+// TestBuildUnit_OmitsConfigPathWhenEmpty mirrors the HOME case: no
+// --config means no CC_CONFIG line, so the daemon keeps its normal
+// ./config.toml -> ~/.cc-connect/config.toml lookup.
 func TestBuildUnit_OmitsConfigPathWhenEmpty(t *testing.T) {
 	mgr := &systemdManager{system: false}
 	out := mgr.buildUnit(Config{
