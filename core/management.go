@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -2239,8 +2240,30 @@ func (m *ManagementServer) handleProjectHealth(w http.ResponseWriter, r *http.Re
 		mgmtError(w, http.StatusMethodNotAllowed, "GET only")
 		return
 	}
+
+	// Snapshot what we need under the lock, then do the filesystem probing
+	// outside it: workDirStatus calls os.Stat, which can block for a long
+	// time on a stalled or network-mounted work_dir, and holding the
+	// management lock across that would stall config writes.
+	type probed struct {
+		name, agentType, workDir string
+		sessions                 int
+	}
 	m.mu.RLock()
-	defer m.mu.RUnlock()
+	probes := make([]probed, 0, len(m.engines))
+	for name, e := range m.engines {
+		probes = append(probes, probed{
+			name:      name,
+			agentType: e.agent.Name(),
+			workDir:   e.WorkDir(),
+			sessions:  len(e.sessions.AllSessions()),
+		})
+	}
+	m.mu.RUnlock()
+
+	// Map iteration order is random; sort so the response is stable across
+	// calls rather than reshuffling on every request.
+	sort.Slice(probes, func(i, j int) bool { return probes[i].name < probes[j].name })
 
 	type projectHealth struct {
 		Name          string         `json:"name"`
@@ -2249,13 +2272,13 @@ func (m *ManagementServer) handleProjectHealth(w http.ResponseWriter, r *http.Re
 		Sessions      int            `json:"sessions_count"`
 	}
 
-	health := make([]projectHealth, 0, len(m.engines))
-	for name, e := range m.engines {
+	health := make([]projectHealth, 0, len(probes))
+	for _, p := range probes {
 		health = append(health, projectHealth{
-			Name:          name,
-			AgentType:     e.agent.Name(),
-			WorkDirStatus: workDirStatus(e.WorkDir()),
-			Sessions:      len(e.sessions.AllSessions()),
+			Name:          p.name,
+			AgentType:     p.agentType,
+			WorkDirStatus: workDirStatus(p.workDir),
+			Sessions:      p.sessions,
 		})
 	}
 	mgmtJSON(w, http.StatusOK, map[string]any{"projects": health})
