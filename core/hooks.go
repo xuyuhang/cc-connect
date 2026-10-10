@@ -213,18 +213,35 @@ func (hm *HookManager) executeHTTP(h *HookConfig, event HookEvent) {
 	const maxRetries = 1
 	const retryDelay = 500 * time.Millisecond
 
+	// One deadline for the whole operation, not one per attempt. A
+	// synchronous hook blocks the caller that emitted the event
+	// (Emit runs non-async hooks inline), so `timeout` has to bound the
+	// total time spent here — giving each attempt its own fresh timeout
+	// would let a sync hook block for 2*timeout + retryDelay, twice what
+	// the operator configured. Retrying still happens whenever the budget
+	// survives the first attempt, which is the common transient-failure
+	// case; if the first attempt exhausts the deadline there is simply no
+	// time left to retry, which is the correct outcome.
+	ctx, cancel := context.WithTimeout(context.Background(), h.timeoutDuration())
+	defer cancel()
+
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			slog.Info("hooks: http retry",
 				"project", hm.project, "event", event.Event,
 				"url", h.URL, "attempt", attempt,
 			)
-			time.Sleep(retryDelay)
+			// Respect the deadline while backing off, so a nearly
+			// exhausted budget does not add a pointless sleep.
+			select {
+			case <-time.After(retryDelay):
+			case <-ctx.Done():
+			}
 		}
-
-		timeout := h.timeoutDuration()
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
+		if ctx.Err() != nil {
+			lastErr = ctx.Err()
+			break
+		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.URL, bytes.NewReader(body))
 		if err != nil {
